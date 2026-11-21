@@ -80,10 +80,9 @@ struct PopoverView: View {
     private var diskSummaryRow: some View {
         let disk = monitor.diskUsage
         let freeText = DiskUsage.formatGigabytes(disk.availableBytes)
-        let usedText = DiskUsage.formatGigabytes(disk.usedBytes)
         let totalText = DiskUsage.formatGigabytes(disk.totalBytes)
         let pctText = String(format: "%.0f%%", disk.usedPercent)
-        let tooltip = "\(disk.volumeName): \(usedText) used / \(totalText) total (\(pctText)) · Available: \(freeText) · Immediately free: \(DiskUsage.formatGigabytes(disk.immediateFreeBytes))"
+        let tooltip = "\(disk.volumeName): \(pctText) used · Total: \(totalText) · Available: \(freeText) · Immediately free: \(DiskUsage.formatGigabytes(disk.immediateFreeBytes))"
 
         return ZStack {
             GeometryReader { proxy in
@@ -112,10 +111,11 @@ struct PopoverView: View {
 
                 Spacer(minLength: 4)
 
-                Text("\(usedText) / \(totalText) (\(pctText))")
+                Text("(\(pctText)) \(totalText)")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 8)
 
