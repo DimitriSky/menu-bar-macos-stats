@@ -102,6 +102,7 @@ let disk = DiskUsage(volumeName: "Macintosh HD", totalBytes: 500_000_000_000, av
 check(abs(disk.usedPercent - 75.0) < 0.01, "Disk usedPercent computes 75%")
 check(DiskUsage.formatGigabytes(disk.availableBytes) == "125 GB", "Formats >=100 GB cleanly")
 check(DiskUsage.formatGigabytes(42_500_000_000) == "42.5 GB", "Formats <100 GB with 1 decimal")
+check(DiskUsage.formatGigabytes(1_000_202_272_768) == "1.0 TB", "Formats >=1 TB cleanly")
 
 // 9. ProcessInspector parsing helpers
 let headerLine = "  447     1 _windowserver  40.5  1.1 174496 740605259 R   0 15-04:39:16 6716:56.12 Fri Nov  6 11:53:38 2026"

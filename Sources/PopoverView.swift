@@ -56,7 +56,7 @@ struct PopoverView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
 
-            diskSummaryRow
+            disksSummarySection
 
             Divider()
 
@@ -71,19 +71,28 @@ struct PopoverView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var diskTint: Color {
-        let f = monitor.diskUsage.usedFraction
+    private func diskTint(for disk: DiskUsage) -> Color {
+        let f = disk.usedFraction
         if f >= 0.90 { return Color(red: 1.0, green: 0.32, blue: 0.32) }
         if f >= 0.75 { return Color(red: 1.0, green: 0.66, blue: 0.18) }
         return Color(red: 0.22, green: 0.82, blue: 0.56)
     }
 
-    private var diskSummaryRow: some View {
-        let disk = monitor.diskUsage
+    private var disksSummarySection: some View {
+        let items = monitor.disks.isEmpty ? [monitor.diskUsage] : monitor.disks
+        return VStack(spacing: 5) {
+            ForEach(items) { disk in
+                diskRow(for: disk)
+            }
+        }
+    }
+
+    private func diskRow(for disk: DiskUsage) -> some View {
+        let tint = diskTint(for: disk)
         let freeText = DiskUsage.formatGigabytes(disk.availableBytes)
         let totalText = DiskUsage.formatGigabytes(disk.totalBytes)
         let pctText = String(format: "%.0f%%", disk.usedPercent)
-        let tooltip = "\(disk.volumeName): \(pctText) used · Total: \(totalText) · Available: \(freeText) · Immediately free: \(DiskUsage.formatGigabytes(disk.immediateFreeBytes))"
+        let tooltip = "\(disk.volumeName) (\(disk.mountPath)): \(pctText) used · Total: \(totalText) · Available: \(freeText) · Immediately free: \(DiskUsage.formatGigabytes(disk.immediateFreeBytes))"
 
         return ZStack {
             GeometryReader { proxy in
@@ -91,15 +100,15 @@ struct PopoverView: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(.quaternary.opacity(0.38))
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(diskTint.opacity(0.24))
+                        .fill(tint.opacity(0.24))
                         .frame(width: proxy.size.width * CGFloat(disk.usedFraction))
                 }
             }
 
             HStack(spacing: 6) {
-                Image(systemName: "internaldrive")
+                Image(systemName: disk.isInternal ? "internaldrive" : "externaldrive")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(diskTint)
+                    .foregroundStyle(tint)
 
                 Text(disk.volumeName)
                     .font(.system(size: 11, weight: .medium))
@@ -121,7 +130,7 @@ struct PopoverView: View {
             .padding(.horizontal, 8)
 
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(diskTint.opacity(0.26), lineWidth: 0.75)
+                .strokeBorder(tint.opacity(0.26), lineWidth: 0.75)
         }
         .frame(height: 24)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))

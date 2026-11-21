@@ -11,6 +11,7 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var cpuPercent: Double = 0
     @Published private(set) var gpuPercent: Double = 0
     @Published private(set) var diskUsage: DiskUsage = .empty
+    @Published private(set) var disks: [DiskUsage] = []
     @Published private(set) var cpuHistory = MetricHistory(capacity: 30)
     @Published private(set) var gpuHistory = MetricHistory(capacity: 30)
     @Published private(set) var topCPU: [ProcessMetric] = []
@@ -62,6 +63,7 @@ final class SystemMonitor: ObservableObject {
     private let samplingQueue = DispatchQueue(label: "com.local.MenuBarStats.sampling", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var quickPopoverTimer: DispatchWorkItem?
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var popoverOpen = false
 
     // Accessed only on samplingQueue
@@ -94,6 +96,7 @@ final class SystemMonitor: ObservableObject {
                 self?.performSample(includeDetails: true)
             }
         }
+        observeVolumeChanges()
         rescheduleTimer()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self else { return }
@@ -106,6 +109,25 @@ final class SystemMonitor: ObservableObject {
         timer = nil
         quickPopoverTimer?.cancel()
         quickPopoverTimer = nil
+        for token in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(token)
+        }
+        workspaceObservers.removeAll()
+    }
+
+    private func observeVolumeChanges() {
+        guard workspaceObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                self.samplingQueue.async {
+                    self.lastDiskSampleTimestamp = nil
+                    self.performSample(includeDetails: DispatchQueue.main.sync { self.shouldTrackProcessDetails })
+                }
+            }
+            workspaceObservers.append(token)
+        }
     }
 
     private var shouldTrackProcessDetails: Bool {
@@ -203,10 +225,10 @@ final class SystemMonitor: ObservableObject {
         let gpuSnapshot = Self.readGPUMetrics(includePerProcess: includeDetails)
         let gpuPct = gpuSnapshot.deviceUtilization
 
-        // 3. Boot disk usage (refresh on startup, popover open, or every 10s)
-        var nextDiskUsage: DiskUsage?
+        // 3. Mounted local disks (boot volume + connected external SSDs, refreshed every 10s or on mount/unmount)
+        var nextDisks: [DiskUsage]?
         if lastDiskSampleTimestamp == nil || (now - (lastDiskSampleTimestamp ?? 0) >= 10.0) {
-            nextDiskUsage = Self.readDiskUsage()
+            nextDisks = Self.readMountedDisks()
             lastDiskSampleTimestamp = now
         }
 
@@ -300,7 +322,12 @@ final class SystemMonitor: ObservableObject {
             guard let self else { return }
             self.cpuPercent = cpuPct
             self.gpuPercent = gpuPct
-            if let nextDiskUsage { self.diskUsage = nextDiskUsage }
+            if let nextDisks {
+                self.disks = nextDisks
+                if let boot = nextDisks.first(where: { $0.mountPath == "/" }) ?? nextDisks.first {
+                    self.diskUsage = boot
+                }
+            }
             self.cpuHistory.append(cpuPct)
             self.gpuHistory.append(gpuPct)
             if let nextTopCPU { self.topCPU = nextTopCPU }
@@ -436,29 +463,62 @@ final class SystemMonitor: ObservableObject {
         )
     }
 
-    // MARK: - Boot Disk Usage via Foundation Volume Resource Values
+    // MARK: - Mounted Local Disks via Foundation Volume Resource Values
 
-    private static func readDiskUsage() -> DiskUsage {
-        let rootURL = URL(fileURLWithPath: "/")
-        let keys: Set<URLResourceKey> = [
+    private static func readMountedDisks() -> [DiskUsage] {
+        let keys: [URLResourceKey] = [
             .volumeNameKey,
             .volumeTotalCapacityKey,
             .volumeAvailableCapacityForImportantUsageKey,
             .volumeAvailableCapacityKey,
+            .volumeIsInternalKey,
+            .volumeIsLocalKey,
+            .volumeIsReadOnlyKey,
         ]
-        guard let values = try? rootURL.resourceValues(forKeys: keys) else {
-            return .empty
+        let urls = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys,
+            options: [.skipHiddenVolumes]
+        ) ?? [URL(fileURLWithPath: "/")]
+
+        var result: [DiskUsage] = []
+        var seenPaths = Set<String>()
+
+        for url in urls {
+            let path = url.path
+            guard !seenPaths.contains(path),
+                  let values = try? url.resourceValues(forKeys: Set(keys)) else {
+                continue
+            }
+            // Include boot volume and writable local volumes (skip read-only DMGs and network mounts)
+            let isBoot = (path == "/")
+            let isLocal = values.volumeIsLocal ?? isBoot
+            let isReadOnly = values.volumeIsReadOnly ?? false
+            let total = Int64(values.volumeTotalCapacity ?? 0)
+            guard isBoot || (isLocal && !isReadOnly && total > 0) else { continue }
+
+            let name = values.volumeName ?? (isBoot ? "Macintosh HD" : url.lastPathComponent)
+            let immediateFree = Int64(values.volumeAvailableCapacity ?? 0)
+            let available = values.volumeAvailableCapacityForImportantUsage ?? immediateFree
+            let isInternal = values.volumeIsInternal ?? isBoot
+
+            seenPaths.insert(path)
+            result.append(DiskUsage(
+                mountPath: path,
+                volumeName: name,
+                totalBytes: total,
+                availableBytes: min(max(0, available), total),
+                immediateFreeBytes: min(max(0, immediateFree), total),
+                isInternal: isInternal
+            ))
         }
-        let name = values.volumeName ?? "Macintosh HD"
-        let total = Int64(values.volumeTotalCapacity ?? 0)
-        let immediateFree = Int64(values.volumeAvailableCapacity ?? 0)
-        let available = values.volumeAvailableCapacityForImportantUsage ?? immediateFree
-        return DiskUsage(
-            volumeName: name,
-            totalBytes: total,
-            availableBytes: min(max(0, available), total),
-            immediateFreeBytes: min(max(0, immediateFree), total)
-        )
+
+        // Always keep boot volume ("/") first, followed by other connected drives alphabetically.
+        result.sort { lhs, rhs in
+            if lhs.mountPath == "/" { return true }
+            if rhs.mountPath == "/" { return false }
+            return lhs.volumeName.localizedCaseInsensitiveCompare(rhs.volumeName) == .orderedAscending
+        }
+        return result.isEmpty ? [.empty] : result
     }
 
     // MARK: - Per-Process CPU via /bin/ps

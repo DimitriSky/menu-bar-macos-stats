@@ -48,13 +48,33 @@ struct TimedSample: Equatable {
     let value: Double
 }
 
-struct DiskUsage: Equatable {
+struct DiskUsage: Identifiable, Equatable {
+    let mountPath: String
     let volumeName: String
     let totalBytes: Int64
     let availableBytes: Int64
     let immediateFreeBytes: Int64
+    let isInternal: Bool
 
-    static let empty = DiskUsage(volumeName: "Disk", totalBytes: 0, availableBytes: 0, immediateFreeBytes: 0)
+    var id: String { mountPath }
+
+    init(
+        mountPath: String = "/",
+        volumeName: String,
+        totalBytes: Int64,
+        availableBytes: Int64,
+        immediateFreeBytes: Int64,
+        isInternal: Bool = true
+    ) {
+        self.mountPath = mountPath
+        self.volumeName = volumeName
+        self.totalBytes = totalBytes
+        self.availableBytes = availableBytes
+        self.immediateFreeBytes = immediateFreeBytes
+        self.isInternal = isInternal
+    }
+
+    static let empty = DiskUsage(mountPath: "/", volumeName: "Disk", totalBytes: 0, availableBytes: 0, immediateFreeBytes: 0, isInternal: true)
 
     var usedBytes: Int64 {
         max(0, totalBytes - availableBytes)
@@ -74,7 +94,11 @@ struct DiskUsage: Equatable {
     }
 
     static func formatGigabytes(_ bytes: Int64) -> String {
-        let gb = Double(max(0, bytes)) / 1_000_000_000.0
+        let b = Double(max(0, bytes))
+        if b >= 1_000_000_000_000 {
+            return String(format: "%.1f TB", b / 1_000_000_000_000.0)
+        }
+        let gb = b / 1_000_000_000.0
         if gb >= 100 {
             return String(format: "%.0f GB", gb)
         }
