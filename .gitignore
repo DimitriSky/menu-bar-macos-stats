@@ -1,0 +1,14 @@
+build/
+MenuBarStats.app/
+MenuBarStats.xcodeproj/
+.DS_Store
+
+# Local configuration and signing material
+.env
+.env.*
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.xcuserstate
+xcuserdata/
