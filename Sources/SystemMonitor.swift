@@ -20,6 +20,7 @@ final class SystemMonitor: ObservableObject {
     @Published private(set) var gpuProcessHistory: [Int32: [TimedSample]] = [:]
     @Published private(set) var latestSampleTime: TimeInterval = ProcessInfo.processInfo.systemUptime
     @Published private(set) var isSamplingDetails = false
+    @Published private(set) var isPopoverOpen = false
 
     @Published var displayMode: MenuBarDisplayMode {
         didSet {
@@ -28,7 +29,7 @@ final class SystemMonitor: ObservableObject {
             if displayMode == .graph {
                 // Start recording Top 5 process 10s history immediately.
                 sampleNow(includeDetails: true)
-            } else if !popoverOpen {
+            } else if !isPopoverOpen {
                 clearDetailBaselines()
             }
         }
@@ -64,7 +65,6 @@ final class SystemMonitor: ObservableObject {
     private var timer: DispatchSourceTimer?
     private var quickPopoverTimer: DispatchWorkItem?
     private var workspaceObservers: [NSObjectProtocol] = []
-    private var popoverOpen = false
 
     // Accessed only on samplingQueue
     private var previousCPUTicks: CPUCoreTicks?
@@ -131,11 +131,11 @@ final class SystemMonitor: ObservableObject {
     }
 
     private var shouldTrackProcessDetails: Bool {
-        popoverOpen || displayMode == .graph
+        isPopoverOpen || displayMode == .graph
     }
 
     func setPopoverOpen(_ open: Bool) {
-        popoverOpen = open
+        isPopoverOpen = open
         quickPopoverTimer?.cancel()
         quickPopoverTimer = nil
 
@@ -147,7 +147,7 @@ final class SystemMonitor: ObservableObject {
             if displayMode != .graph || topCPU.isEmpty {
                 sampleNow(includeDetails: true)
                 let work = DispatchWorkItem { [weak self] in
-                    guard let self, self.popoverOpen else { return }
+                    guard let self, self.isPopoverOpen else { return }
                     self.sampleNow(includeDetails: true)
                 }
                 quickPopoverTimer = work

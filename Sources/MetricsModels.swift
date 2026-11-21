@@ -285,19 +285,23 @@ enum MetricsMath {
 }
 
 struct MetricHistory {
-    private(set) var values: [Double]
+    private(set) var samples: [TimedSample]
     let capacity: Int
 
+    var values: [Double] { samples.suffix(capacity).map(\.value) }
+    var latestPosition: Double { samples[samples.count - 1].time }
+    var visibleSpan: Double { Double(capacity - 1) }
+
     init(capacity: Int = 30) {
-        self.capacity = max(2, capacity)
-        self.values = Array(repeating: 0, count: self.capacity)
+        let capacity = max(2, capacity)
+        self.capacity = capacity
+        // Advance one position per sample and keep the point leaving the left edge for the scroll.
+        self.samples = (-capacity...0).map { TimedSample(time: Double($0), value: 0) }
     }
 
     mutating func append(_ value: Double) {
-        let clamped = min(max(value, 0), 100)
-        if values.count >= capacity {
-            values.removeFirst(values.count - capacity + 1)
-        }
-        values.append(clamped)
+        let sample = TimedSample(time: latestPosition + 1, value: min(max(value, 0), 100))
+        samples.removeFirst()
+        samples.append(sample)
     }
 }

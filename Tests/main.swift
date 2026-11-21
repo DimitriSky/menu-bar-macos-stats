@@ -45,6 +45,11 @@ check(topGPU[4].pid == 4 && abs(topGPU[4].percent - 20.0) < 0.01, "Fifth GPU con
 var hist = MetricHistory(capacity: 5)
 for v in [10.0, 20.0, 30.0, 40.0, 50.0, 60.0] { hist.append(v) }
 check(hist.values == [20.0, 30.0, 40.0, 50.0, 60.0], "History buffer keeps latest N samples")
+let visibleStart = hist.latestPosition - hist.visibleSpan
+hist.append(60.0)
+check(hist.latestPosition == 7, "Scroll position advances even when the reading repeats")
+check(hist.samples.first == TimedSample(time: visibleStart, value: 20.0),
+      "Scrolling history keeps the point leaving the left edge")
 hist.append(150.0)
 hist.append(-5.0)
 check(hist.values.suffix(2) == [100.0, 0.0], "History clamps values to 0...100")

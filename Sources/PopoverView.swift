@@ -3,6 +3,7 @@ import SwiftUI
 
 struct PopoverView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var monitor: SystemMonitor
     let onSelectProcess: (ProcessMetric) -> Void
     let onQuit: () -> Void
@@ -14,6 +15,10 @@ struct PopoverView: View {
         monitor.displayMode == .graph
     }
 
+    private var scrollAnimationDuration: Double {
+        min(0.42, monitor.updateInterval.rawValue * 0.45)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 8) {
@@ -22,7 +27,7 @@ struct PopoverView: View {
                     metricCard(
                         label: "CPU",
                         percent: monitor.cpuPercent,
-                        history: monitor.cpuHistory.values,
+                        history: monitor.cpuHistory,
                         tint: cpuTint
                     )
                     processSection(
@@ -41,7 +46,7 @@ struct PopoverView: View {
                     metricCard(
                         label: "GPU",
                         percent: monitor.gpuPercent,
-                        history: monitor.gpuHistory.values,
+                        history: monitor.gpuHistory,
                         tint: gpuTint
                     )
                     processSection(
@@ -137,19 +142,32 @@ struct PopoverView: View {
         .help(tooltip)
     }
 
-    private func metricCard(label: String, percent: Double, history: [Double], tint: Color) -> some View {
-        ZStack(alignment: .top) {
-            SparklineView(values: history, tint: tint)
+    private func metricCard(label: String, percent: Double, history: MetricHistory, tint: Color) -> some View {
+        let displayPercent = String(format: "%.0f%%", percent)
+        let duration = monitor.isPopoverOpen ? scrollAnimationDuration : 0
+        let numberAnimation: Animation? = reduceMotion || duration == 0 ? nil : .easeOut(duration: duration)
+        return ZStack(alignment: .top) {
+            TimedSparklineView(
+                samples: history.samples,
+                currentValue: percent,
+                referenceTime: history.latestPosition,
+                windowSeconds: history.visibleSpan,
+                scrollAnimationDuration: duration,
+                tint: tint,
+                cornerRadius: 8
+            )
 
             HStack(alignment: .top) {
                 Text(label)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.primary)
                 Spacer()
-                Text(String(format: "%.0f%%", percent))
+                Text(displayPercent)
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .foregroundStyle(.primary)
                     .monospacedDigit()
+                    .contentTransition(numberAnimation == nil ? .identity : .numericText(value: percent))
+                    .animation(numberAnimation, value: displayPercent)
             }
             .padding(.horizontal, 8)
             .padding(.top, 5)
@@ -192,7 +210,7 @@ struct PopoverView: View {
                             samples: historyMap[proc.pid] ?? [],
                             referenceTime: monitor.latestSampleTime,
                             windowSeconds: SystemMonitor.processGraphWindowSeconds,
-                            scrollAnimationDuration: min(0.42, monitor.updateInterval.rawValue * 0.45),
+                            scrollAnimationDuration: scrollAnimationDuration,
                             onSelect: { onSelectProcess(proc) }
                         )
                         .transition(.asymmetric(
@@ -390,17 +408,19 @@ private struct ProcessRowView: View {
 }
 
 private struct TimedSparklineView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let samples: [TimedSample]
     let currentValue: Double
     let referenceTime: TimeInterval
     let windowSeconds: TimeInterval
     let scrollAnimationDuration: Double
     let tint: Color
+    var cornerRadius: CGFloat = 6
 
     var body: some View {
         let source = samples.isEmpty ? [TimedSample(time: referenceTime, value: currentValue)] : samples
         ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(.quaternary.opacity(0.38))
 
             // Subtle 50% reference line so exact 0–100% scale is immediately readable.
@@ -427,11 +447,14 @@ private struct TimedSparklineView: View {
             )
             .stroke(tint.opacity(0.95), style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
 
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(tint.opacity(0.22), lineWidth: 0.75)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .animation(.easeOut(duration: scrollAnimationDuration), value: referenceTime)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .animation(
+            reduceMotion || scrollAnimationDuration == 0 ? nil : .easeOut(duration: scrollAnimationDuration),
+            value: referenceTime
+        )
     }
 }
 
@@ -516,60 +539,6 @@ private struct ProcessIconView: View {
             Image(systemName: "gearshape.fill")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct SparklineView: View {
-    let values: [Double]
-    let tint: Color
-
-    var body: some View {
-        GeometryReader { proxy in
-            let w = proxy.size.width
-            let h = proxy.size.height
-            let count = values.count
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(.quaternary.opacity(0.45))
-
-                Path { path in
-                    let midY = h * 0.5
-                    path.move(to: CGPoint(x: 0, y: midY))
-                    path.addLine(to: CGPoint(x: w, y: midY))
-                }
-                .stroke(Color.primary.opacity(0.07), lineWidth: 0.5)
-
-                if count >= 2 && w > 1 && h > 1 {
-                    let step = w / CGFloat(count - 1)
-                    let linePath = Path { path in
-                        for (i, v) in values.enumerated() {
-                            let x = CGFloat(i) * step
-                            let frac = CGFloat(min(max(v, 0), 100)) / 100.0
-                            let y = max(0.75, h - frac * h)
-                            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                            else { path.addLine(to: CGPoint(x: x, y: y)) }
-                        }
-                    }
-                    let fillPath = Path { path in
-                        path.move(to: CGPoint(x: 0, y: h))
-                        for (i, v) in values.enumerated() {
-                            let x = CGFloat(i) * step
-                            let frac = CGFloat(min(max(v, 0), 100)) / 100.0
-                            let y = max(0.75, h - frac * h)
-                            path.addLine(to: CGPoint(x: x, y: y))
-                        }
-                        path.addLine(to: CGPoint(x: w, y: h))
-                        path.closeSubpath()
-                    }
-                    fillPath.fill(tint.opacity(0.26))
-                    linePath.stroke(tint.opacity(0.95), style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
-                }
-
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(tint.opacity(0.24), lineWidth: 0.75)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
     }
 }
