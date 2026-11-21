@@ -197,23 +197,41 @@ enum MetricsMath {
     }
 
     static func parsePSLine(_ line: String) -> (pid: Int32, cpuTimeSeconds: Double, instantCPU: Double, name: String)? {
+        parsePSLine(line[...])
+    }
+
+    static func parsePSLine(_ line: Substring) -> (pid: Int32, cpuTimeSeconds: Double, instantCPU: Double, name: String)? {
         // Expected format from: ps -axo pid=,%cpu=,cputime=,comm=
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = trimASCIIWhitespace(line)
         guard !trimmed.isEmpty else { return nil }
-        let parts = trimmed.split(maxSplits: 3, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace })
+        let parts = trimmed.split(maxSplits: 3, omittingEmptySubsequences: true, whereSeparator: { $0 == " " || $0 == "\t" })
         guard parts.count == 4,
               let pid = Int32(parts[0]),
               let instantCPU = Double(parts[1]),
-              let cpuTime = parseCPUTime(String(parts[2])) else {
+              let cpuTime = parseCPUTime(parts[2]) else {
             return nil
         }
-        let rawCommand = String(parts[3]).trimmingCharacters(in: .whitespaces)
-        let basename = URL(fileURLWithPath: rawCommand).lastPathComponent
-        let cleanName = basename.isEmpty ? rawCommand : basename
+        let rawCommand = trimASCIIWhitespace(parts[3])
+        let cleanName = executableBasename(from: rawCommand)
         return (pid, cpuTime, instantCPU, cleanName)
     }
 
+    /// Parses full `ps -axo pid=,%cpu=,cputime=,comm=` output without excluding any PID (including self).
+    static func parsePSSnapshot(_ output: String) -> [Int32: (name: String, cpuTime: Double, instantCPU: Double)] {
+        var result: [Int32: (name: String, cpuTime: Double, instantCPU: Double)] = [:]
+        result.reserveCapacity(512)
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let parsed = parsePSLine(line) else { continue }
+            result[parsed.pid] = (parsed.name, parsed.cpuTimeSeconds, parsed.instantCPU)
+        }
+        return result
+    }
+
     static func parseCPUTime(_ raw: String) -> Double? {
+        parseCPUTime(raw[...])
+    }
+
+    static func parseCPUTime(_ raw: Substring) -> Double? {
         let components = raw.split(separator: ":")
         if components.count == 2,
            let minutes = Double(components[0]),
@@ -227,6 +245,49 @@ enum MetricsMath {
             return hours * 3600.0 + minutes * 60.0 + seconds
         }
         return nil
+    }
+
+    private static func trimASCIIWhitespace(_ s: Substring) -> Substring {
+        var start = s.startIndex
+        var end = s.endIndex
+        while start < end, isASCIIWhitespace(s[start]) {
+            start = s.index(after: start)
+        }
+        while end > start {
+            let prev = s.index(before: end)
+            if isASCIIWhitespace(s[prev]) {
+                end = prev
+            } else {
+                break
+            }
+        }
+        return s[start..<end]
+    }
+
+    private static func isASCIIWhitespace(_ c: Character) -> Bool {
+        c == " " || c == "\t" || c == "\r" || c == "\n"
+    }
+
+    private static func executableBasename(from rawCommand: Substring) -> String {
+        guard !rawCommand.isEmpty else { return "" }
+        var end = rawCommand.endIndex
+        while end > rawCommand.startIndex {
+            let prev = rawCommand.index(before: end)
+            if rawCommand[prev] == "/" {
+                end = prev
+            } else {
+                break
+            }
+        }
+        let stripped = rawCommand[rawCommand.startIndex..<end]
+        guard !stripped.isEmpty else { return String(rawCommand) }
+        if let lastSlash = stripped.lastIndex(of: "/") {
+            let afterSlash = stripped.index(after: lastSlash)
+            if afterSlash < stripped.endIndex {
+                return String(stripped[afterSlash..<stripped.endIndex])
+            }
+        }
+        return String(stripped)
     }
 
     static func gpuAllDeltas(

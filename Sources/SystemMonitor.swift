@@ -5,27 +5,61 @@ import Foundation
 import IOKit
 import ServiceManagement
 
+struct PopoverSnapshot {
+    var cpuPercent: Double = 0
+    var gpuPercent: Double = 0
+    var diskUsage: DiskUsage = .empty
+    var disks: [DiskUsage] = []
+    var cpuHistory = MetricHistory(capacity: 30)
+    var gpuHistory = MetricHistory(capacity: 30)
+    var topCPU: [ProcessMetric] = []
+    var topGPU: [ProcessMetric] = []
+    var cpuProcessHistory: [Int32: [TimedSample]] = [:]
+    var gpuProcessHistory: [Int32: [TimedSample]] = [:]
+    var processIcons: [Int32: NSImage] = [:]
+    var latestSampleTime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    var isSamplingDetails: Bool = false
+    /// Disabled on the initial open hydration frame so charts don't animate across stale closed-panel time gaps.
+    var allowScrollAnimation: Bool = false
+}
+
+struct PopoverLayoutSignature: Equatable {
+    let displayMode: MenuBarDisplayMode
+    let topCPUCount: Int
+    let topGPUCount: Int
+    let disksCount: Int
+    let isSamplingDetails: Bool
+}
+
 final class SystemMonitor: ObservableObject {
     static let processGraphWindowSeconds: TimeInterval = 10.0
 
-    @Published private(set) var cpuPercent: Double = 0
-    @Published private(set) var gpuPercent: Double = 0
-    @Published private(set) var diskUsage: DiskUsage = .empty
-    @Published private(set) var disks: [DiskUsage] = []
-    @Published private(set) var cpuHistory = MetricHistory(capacity: 30)
-    @Published private(set) var gpuHistory = MetricHistory(capacity: 30)
-    @Published private(set) var topCPU: [ProcessMetric] = []
-    @Published private(set) var topGPU: [ProcessMetric] = []
-    @Published private(set) var cpuProcessHistory: [Int32: [TimedSample]] = [:]
-    @Published private(set) var gpuProcessHistory: [Int32: [TimedSample]] = [:]
-    @Published private(set) var latestSampleTime: TimeInterval = ProcessInfo.processInfo.systemUptime
-    @Published private(set) var isSamplingDetails = false
+    // Single batched SwiftUI snapshot — only mutated while the popup is open (or on open hydration).
+    @Published private(set) var popoverState = PopoverSnapshot()
     @Published private(set) var isPopoverOpen = false
+
+    // Non-published live backing state updated on every tick for the pure-AppKit menu bar canvas
+    // and for instant hydration when the popup opens (zero SwiftUI work while popup is closed).
+    private(set) var liveCPUPercent: Double = 0
+    private(set) var liveGPUPercent: Double = 0
+    private(set) var liveDiskUsage: DiskUsage = .empty
+    private(set) var liveDisks: [DiskUsage] = []
+    private(set) var liveCPUHistory = MetricHistory(capacity: 30)
+    private(set) var liveGPUHistory = MetricHistory(capacity: 30)
+    private var liveTopCPU: [ProcessMetric] = []
+    private var liveTopGPU: [ProcessMetric] = []
+    private var liveCPUProcessHistory: [Int32: [TimedSample]] = [:]
+    private var liveGPUProcessHistory: [Int32: [TimedSample]] = [:]
+    private var liveLatestSampleTime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    private var liveIsSamplingDetails: Bool = false
 
     @Published var displayMode: MenuBarDisplayMode {
         didSet {
             UserDefaults.standard.set(displayMode.rawValue, forKey: Keys.displayMode)
             onMenuBarNeedsUpdate?()
+            if isPopoverOpen {
+                notifyPopoverLayoutIfNeeded()
+            }
             if displayMode == .graph {
                 // Start recording Top 5 process 10s history immediately.
                 sampleNow(includeDetails: true)
@@ -54,6 +88,17 @@ final class SystemMonitor: ObservableObject {
     @Published var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
 
     var onMenuBarNeedsUpdate: (() -> Void)?
+    var onPopoverLayoutChanged: (() -> Void)?
+
+    private struct ResolvedProcessMetadata {
+        let rawName: String
+        let displayName: String
+        let icon: NSImage?
+    }
+
+    // Accessed only on main thread; caches localizedName & NSImage for displayed Top-5 PIDs only.
+    private var metadataCache: [Int32: ResolvedProcessMetadata] = [:]
+    private var lastPopoverLayoutSignature: PopoverLayoutSignature?
 
     private enum Keys {
         static let displayMode = "menuBarDisplayMode"
@@ -141,10 +186,15 @@ final class SystemMonitor: ObservableObject {
 
         if open {
             launchAtLogin = SMAppService.mainApp.status == .enabled
-            isSamplingDetails = topCPU.isEmpty
+            liveIsSamplingDetails = liveTopCPU.isEmpty
+            // Hydrate SwiftUI snapshot immediately before the panel measures fittingSize and appears,
+            // with scroll animations disabled for this hydration frame so charts don't slide across stale gaps.
+            publishPopoverState(allowScrollAnimation: false)
+            lastPopoverLayoutSignature = currentPopoverLayoutSignature()
+
             // In Graph mode we already collect continuous Top-5 samples on the main timer;
             // only kick off an extra bootstrap burst when opening fresh from Percent mode.
-            if displayMode != .graph || topCPU.isEmpty {
+            if displayMode != .graph || liveTopCPU.isEmpty {
                 sampleNow(includeDetails: true)
                 let work = DispatchWorkItem { [weak self] in
                     guard let self, self.isPopoverOpen else { return }
@@ -154,10 +204,86 @@ final class SystemMonitor: ObservableObject {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
             }
         } else {
-            isSamplingDetails = false
+            liveIsSamplingDetails = false
+            lastPopoverLayoutSignature = nil
             if displayMode != .graph {
                 clearDetailBaselines()
             }
+        }
+    }
+
+    private func currentPopoverLayoutSignature() -> PopoverLayoutSignature {
+        PopoverLayoutSignature(
+            displayMode: displayMode,
+            topCPUCount: popoverState.topCPU.count,
+            topGPUCount: popoverState.topGPU.count,
+            disksCount: popoverState.disks.count,
+            isSamplingDetails: popoverState.isSamplingDetails
+        )
+    }
+
+    private func notifyPopoverLayoutIfNeeded() {
+        let sig = currentPopoverLayoutSignature()
+        if sig != lastPopoverLayoutSignature {
+            lastPopoverLayoutSignature = sig
+            onPopoverLayoutChanged?()
+        }
+    }
+
+    private func publishPopoverState(allowScrollAnimation: Bool) {
+        var icons: [Int32: NSImage] = [:]
+        icons.reserveCapacity(liveTopCPU.count + liveTopGPU.count)
+
+        let resolvedCPU = resolveDisplayProcesses(liveTopCPU, into: &icons)
+        let resolvedGPU = resolveDisplayProcesses(liveTopGPU, into: &icons)
+
+        if metadataCache.count > 64 {
+            var activePIDs = Set<Int32>()
+            for p in resolvedCPU { activePIDs.insert(p.pid) }
+            for p in resolvedGPU { activePIDs.insert(p.pid) }
+            metadataCache = metadataCache.filter { activePIDs.contains($0.key) }
+        }
+
+        popoverState = PopoverSnapshot(
+            cpuPercent: liveCPUPercent,
+            gpuPercent: liveGPUPercent,
+            diskUsage: liveDiskUsage,
+            disks: liveDisks,
+            cpuHistory: liveCPUHistory,
+            gpuHistory: liveGPUHistory,
+            topCPU: resolvedCPU,
+            topGPU: resolvedGPU,
+            cpuProcessHistory: liveCPUProcessHistory,
+            gpuProcessHistory: liveGPUProcessHistory,
+            processIcons: icons,
+            latestSampleTime: liveLatestSampleTime,
+            isSamplingDetails: liveIsSamplingDetails,
+            allowScrollAnimation: allowScrollAnimation
+        )
+    }
+
+    private func resolveDisplayProcesses(
+        _ raw: [ProcessMetric],
+        into icons: inout [Int32: NSImage]
+    ) -> [ProcessMetric] {
+        raw.map { proc in
+            let meta: ResolvedProcessMetadata
+            if let cached = metadataCache[proc.pid], cached.rawName == proc.name {
+                meta = cached
+            } else {
+                let app = NSRunningApplication(processIdentifier: proc.pid)
+                let created = ResolvedProcessMetadata(
+                    rawName: proc.name,
+                    displayName: app?.localizedName ?? proc.name,
+                    icon: app?.icon
+                )
+                metadataCache[proc.pid] = created
+                meta = created
+            }
+            if let icon = meta.icon {
+                icons[proc.pid] = icon
+            }
+            return ProcessMetric(pid: proc.pid, name: meta.displayName, percent: proc.percent)
         }
     }
 
@@ -320,28 +446,36 @@ final class SystemMonitor: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.cpuPercent = cpuPct
-            self.gpuPercent = gpuPct
+            self.liveCPUPercent = cpuPct
+            self.liveGPUPercent = gpuPct
             if let nextDisks {
-                self.disks = nextDisks
+                self.liveDisks = nextDisks
                 if let boot = nextDisks.first(where: { $0.mountPath == "/" }) ?? nextDisks.first {
-                    self.diskUsage = boot
+                    self.liveDiskUsage = boot
                 }
             }
-            self.cpuHistory.append(cpuPct)
-            self.gpuHistory.append(gpuPct)
-            if let nextTopCPU { self.topCPU = nextTopCPU }
-            if let nextTopGPU { self.topGPU = nextTopGPU }
+            self.liveCPUHistory.append(cpuPct)
+            self.liveGPUHistory.append(gpuPct)
+            if let nextTopCPU { self.liveTopCPU = nextTopCPU }
+            if let nextTopGPU { self.liveTopGPU = nextTopGPU }
             if let nextCPUSeries {
-                self.cpuProcessHistory = nextCPUSeries
-                self.latestSampleTime = now
+                self.liveCPUProcessHistory = nextCPUSeries
+                self.liveLatestSampleTime = now
             }
             if let nextGPUSeries {
-                self.gpuProcessHistory = nextGPUSeries
-                self.latestSampleTime = now
+                self.liveGPUProcessHistory = nextGPUSeries
+                self.liveLatestSampleTime = now
             }
-            if includeDetails { self.isSamplingDetails = false }
+            if includeDetails { self.liveIsSamplingDetails = false }
+
+            // Always update the lightweight AppKit menu bar canvas.
             self.onMenuBarNeedsUpdate?()
+
+            // Only publish to SwiftUI and check panel sizing while the popup is actually visible.
+            if self.isPopoverOpen {
+                self.publishPopoverState(allowScrollAnimation: true)
+                self.notifyPopoverLayoutIfNeeded()
+            }
         }
     }
 
@@ -449,8 +583,7 @@ final class SystemMonitor: ObservableObject {
                         if let existing = byPID[parsed.pid] {
                             byPID[parsed.pid] = (existing.name, existing.ns &+ totalNs)
                         } else {
-                            let resolvedName = NSRunningApplication(processIdentifier: parsed.pid)?.localizedName ?? parsed.name
-                            byPID[parsed.pid] = (resolvedName, totalNs)
+                            byPID[parsed.pid] = (parsed.name, totalNs)
                         }
                     }
                 }
@@ -542,17 +675,6 @@ final class SystemMonitor: ObservableObject {
         task.waitUntilExit()
 
         guard let output = String(data: data, encoding: .utf8) else { return [:] }
-        let selfPID = ProcessInfo.processInfo.processIdentifier
-        var result: [Int32: (name: String, cpuTime: Double, instantCPU: Double)] = [:]
-
-        for line in output.split(whereSeparator: \.isNewline) {
-            guard let parsed = MetricsMath.parsePSLine(String(line)),
-                  parsed.pid != selfPID else {
-                continue
-            }
-            let displayName = NSRunningApplication(processIdentifier: parsed.pid)?.localizedName ?? parsed.name
-            result[parsed.pid] = (displayName, parsed.cpuTimeSeconds, parsed.instantCPU)
-        }
-        return result
+        return MetricsMath.parsePSSnapshot(output)
     }
 }

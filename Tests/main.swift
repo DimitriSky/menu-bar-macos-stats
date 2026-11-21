@@ -29,6 +29,20 @@ check(ps1?.name == "WindowServer", "Extracts executable basename")
 let psSpace = MetricsMath.parsePSLine(" 44349  14.8   27:19.06 /Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper.app/Contents/MacOS/Antigravity Helper")
 check(psSpace?.name == "Antigravity Helper", "Preserves spaces in executable name")
 
+let psBare = MetricsMath.parsePSLine("     0   2.5  1:02:03.45 kernel_task" as Substring)
+check(psBare?.pid == 0 && psBare?.name == "kernel_task", "Parses bare executable name from Substring")
+check(abs((psBare?.cpuTimeSeconds ?? 0) - 3723.45) < 0.01, "Parses HH:MM:SS cputime format")
+check(MetricsMath.parsePSLine("bad line") == nil, "Rejects malformed ps line")
+
+let selfPID = ProcessInfo.processInfo.processIdentifier
+let snapshotText = """
+  447  12.0   10:00.00 /System/Library/WindowServer
+ \(selfPID)   1.5    0:05.25 /Applications/MenuBarStats.app/Contents/MacOS/MenuBarStats
+"""
+let parsedSnapshot = MetricsMath.parsePSSnapshot(snapshotText)
+check(parsedSnapshot[selfPID]?.name == "MenuBarStats", "Snapshot includes self PID without hiding")
+check(parsedSnapshot[447]?.name == "WindowServer", "Snapshot includes WindowServer")
+
 // 4. GPU delta & Top 5 limit
 var prevGPU: [Int32: (name: String, ns: UInt64)] = [:]
 var curGPU: [Int32: (name: String, ns: UInt64)] = [:]

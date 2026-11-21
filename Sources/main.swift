@@ -55,19 +55,16 @@ final class StatusPopupController {
 
     init(rootView: PopoverView) {
         hostingController = NSHostingController(rootView: rootView)
-        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        // Disable automatic AppKit intrinsicContentSize invalidation on every SwiftUI animation frame;
+        // we compute exact size explicitly via `sizeThatFits(in:)` only when layout structure changes.
+        hostingController.sizingOptions = []
+        hostingController.view.autoresizingMask = [.width, .height]
 
-        containerView = NSView()
+        containerView = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 290))
         containerView.wantsLayer = true
         containerView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingController.view.frame = containerView.bounds
         containerView.addSubview(hostingController.view)
-
-        NSLayoutConstraint.activate([
-            hostingController.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-            hostingController.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            hostingController.view.topAnchor.constraint(equalTo: containerView.topAnchor),
-            hostingController.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
-        ])
 
         panel = PopupPanel(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 290),
@@ -110,11 +107,15 @@ final class StatusPopupController {
         anchoredTopY = min(anchorRect.minY - 6, safeTopEdge)
         anchoredCenterX = anchorRect.midX
 
-        updatePanelFrame()
         onVisibilityChange?(true)
+        updatePanelFrame()
         panel.orderFrontRegardless()
         panel.makeKey()
         installDismissMonitors(excluding: buttonWindow)
+        // Safety net: re-sync once on next runloop turn after initial SwiftUI layout/appearance settles.
+        DispatchQueue.main.async { [weak self] in
+            self?.updatePanelFrameIfVisible()
+        }
     }
 
     func updatePanelFrameIfVisible() {
@@ -131,10 +132,11 @@ final class StatusPopupController {
 
     private func updatePanelFrame() {
         guard let screen = anchoredScreen ?? NSScreen.main else { return }
-        containerView.layoutSubtreeIfNeeded()
-        let fitting = hostingController.view.fittingSize
-        let width = max(380, ceil(fitting.width))
         let maxHeight = max(220, screen.visibleFrame.height - 24)
+        // Flush any freshly hydrated SwiftUI @Published state before measuring ideal size.
+        hostingController.view.layoutSubtreeIfNeeded()
+        let fitting = hostingController.sizeThatFits(in: CGSize(width: 380, height: maxHeight))
+        let width = max(380, ceil(fitting.width))
         let height = min(maxHeight, max(180, ceil(fitting.height)))
 
         let minX = screen.frame.minX + 8
@@ -145,6 +147,7 @@ final class StatusPopupController {
         let targetFrame = NSRect(x: x, y: y, width: width, height: height)
         if panel.frame != targetFrame {
             panel.setFrame(targetFrame, display: true, animate: false)
+            hostingController.view.frame = containerView.bounds
             panel.invalidateShadow()
         }
     }
@@ -270,7 +273,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         monitor.onMenuBarNeedsUpdate = { [weak self] in
             self?.updateStatusItemIfNeeded()
-            // Keep popup height cleanly synced downward when Top 5 rows or Graph mode change.
+        }
+
+        monitor.onPopoverLayoutChanged = { [weak self] in
+            // Only re-measure panel fittingSize when row/disk counts or display mode actually change.
             DispatchQueue.main.async {
                 self?.popupController.updatePanelFrameIfVisible()
             }
@@ -295,11 +301,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         canvasView.update(
             mode: mode,
-            cpu: monitor.cpuPercent,
-            gpu: monitor.gpuPercent,
-            diskUsedFraction: monitor.diskUsage.usedFraction,
-            cpuHistory: monitor.cpuHistory.values,
-            gpuHistory: monitor.gpuHistory.values
+            cpu: monitor.liveCPUPercent,
+            gpu: monitor.liveGPUPercent,
+            diskUsedFraction: monitor.liveDiskUsage.usedFraction,
+            cpuHistory: monitor.liveCPUHistory.values,
+            gpuHistory: monitor.liveGPUHistory.values
         )
     }
 
