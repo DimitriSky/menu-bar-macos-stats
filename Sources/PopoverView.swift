@@ -121,7 +121,7 @@ struct PopoverView: View {
 
                 Spacer(minLength: 4)
 
-                Text("(\(pctText)) \(totalText)")
+                Text("\(pctText) \(totalText)")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
