@@ -4,6 +4,7 @@ import SwiftUI
 struct PopoverView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var monitor: SystemMonitor
+    let onSelectProcess: (ProcessMetric) -> Void
     let onQuit: () -> Void
 
     private let cpuTint = Color(red: 0.22, green: 0.62, blue: 1.0)
@@ -182,7 +183,8 @@ struct PopoverView: View {
                             samples: historyMap[proc.pid] ?? [],
                             referenceTime: monitor.latestSampleTime,
                             windowSeconds: SystemMonitor.processGraphWindowSeconds,
-                            scrollAnimationDuration: min(0.42, monitor.updateInterval.rawValue * 0.45)
+                            scrollAnimationDuration: min(0.42, monitor.updateInterval.rawValue * 0.45),
+                            onSelect: { onSelectProcess(proc) }
                         )
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .scale(scale: 0.96)),
@@ -284,8 +286,34 @@ private struct ProcessRowView: View {
     let referenceTime: TimeInterval
     let windowSeconds: TimeInterval
     let scrollAnimationDuration: Double
+    let onSelect: () -> Void
+
+    @State private var isHovering = false
 
     var body: some View {
+        Button(action: onSelect) {
+            rowContent
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(isHovering ? tint.opacity(0.65) : .clear, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovering = hovering
+            if hovering { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+        }
+        .onDisappear {
+            if isHovering {
+                isHovering = false
+                NSCursor.arrow.set()
+            }
+        }
+        .help("\(process.name) (PID \(process.pid)) — Click for details")
+    }
+
+    @ViewBuilder
+    private var rowContent: some View {
         if showGraph {
             ZStack {
                 TimedSparklineView(
@@ -317,7 +345,6 @@ private struct ProcessRowView: View {
                 .padding(.horizontal, 6)
             }
             .frame(height: 28)
-            .help("\(process.name) (PID \(process.pid))")
         } else {
             HStack(spacing: 5) {
                 ProcessIconView(pid: process.pid)
@@ -347,7 +374,8 @@ private struct ProcessRowView: View {
                     .frame(height: 3)
                 }
             }
-            .help("\(process.name) (PID \(process.pid))")
+            .padding(.horizontal, 3)
+            .padding(.vertical, 2)
         }
     }
 }

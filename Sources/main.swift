@@ -189,11 +189,38 @@ final class StatusPopupController {
     }
 }
 
+final class ProcessInfoWindowController: NSObject, NSWindowDelegate {
+    private let model = ProcessInspectorModel()
+    private var window: NSWindow?
+
+    func show(process: ProcessMetric) {
+        if window == nil {
+            let hosting = NSHostingController(rootView: ProcessInfoView(inspector: model))
+            let win = NSWindow(contentViewController: hosting)
+            win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            win.setContentSize(NSSize(width: 500, height: 520))
+            win.isReleasedWhenClosed = false
+            win.delegate = self
+            win.center()
+            window = win
+        }
+        window?.title = "\(process.name) (PID \(process.pid)) — Process Info"
+        model.inspect(pid: process.pid, name: process.name)
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        model.stop()
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let monitor = SystemMonitor()
     private var statusItem: NSStatusItem!
     private var canvasView: StatusBarCanvasView!
     private var popupController: StatusPopupController!
+    private let infoWindowController = ProcessInfoWindowController()
     private var lastRenderedMode: MenuBarDisplayMode?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -228,7 +255,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         popupController = StatusPopupController(
-            rootView: PopoverView(monitor: monitor, onQuit: { [weak self] in self?.quit() })
+            rootView: PopoverView(
+                monitor: monitor,
+                onSelectProcess: { [weak self] proc in
+                    self?.popupController.close()
+                    self?.infoWindowController.show(process: proc)
+                },
+                onQuit: { [weak self] in self?.quit() }
+            )
         )
         popupController.onVisibilityChange = { [weak self] visible in
             self?.monitor.setPopoverOpen(visible)
