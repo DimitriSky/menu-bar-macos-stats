@@ -2,6 +2,8 @@
 
 MenuBarStats is a native macOS menu bar app for checking CPU, GPU, and startup disk usage. Click its menu bar item to see which processes are using the most CPU and GPU.
 
+![MenuBarStats in Graph mode, showing CPU and GPU activity, top processes, and disk usage](docs/menubarstats.png)
+
 ## Features
 
 - Show system-wide CPU and GPU usage as percentages or live graphs. A pie indicator shows startup disk usage in both modes.
